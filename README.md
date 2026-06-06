@@ -1,9 +1,8 @@
 # localvector
 
 A small **Delphi / Object Pascal** command-line tool that produces **local
-sentence embeddings** with **ONNX Runtime**, using the
-[`onnx-models/all-MiniLM-L6-v2-onnx`](https://huggingface.co/onnx-models/all-MiniLM-L6-v2-onnx)
-model. Give it text, get back a 384-dimensional embedding vector as JSON.
+sentence embeddings** with **ONNX Runtime**. Give it text, get back an embedding
+vector as JSON.
 
 It uses the ONNX Runtime Pascal bindings already in this repo
 (`onnxruntime.pas`, `onnxruntime_pas_api.pas`) and follows the same approach as
@@ -13,29 +12,45 @@ load `onnxruntime.dll`, build input tensors, run, read outputs.
 ```
 localvector "The quick brown fox jumps over the lazy dog"
 [0.0419,-0.0213,0.0688, ... ,0.0157]      # 384 floats
+
+localvector --model bge "The quick brown fox jumps over the lazy dog"
+[-0.1047,-0.0224,-0.0126, ... ]            # 384 floats, CLS-pooled
 ```
+
+## Models
+
+Choose one with `--model NAME` (default `minilm`). On first use the model +
+vocab are downloaded into `models/<name>/` next to the executable.
+
+| `--model` | Model | Dim | Pooling | Size | Source |
+|-----------|-------|-----|---------|------|--------|
+| `minilm`  | all-MiniLM-L6-v2 | 384 | mean | ~90 MB | [onnx-models/all-MiniLM-L6-v2-onnx](https://huggingface.co/onnx-models/all-MiniLM-L6-v2-onnx) |
+| `bge`     | bge-small-en-v1.5 | 384 | CLS | ~133 MB | [Xenova/bge-small-en-v1.5](https://huggingface.co/Xenova/bge-small-en-v1.5) |
+
+Both are BERT/WordPiece models. `--pooling mean|cls|last` overrides the default.
 
 ## How it works
 
 ```
 text
   -> BERT WordPiece tokenizer (vocab.txt)        LocalVector.Tokenizer
-  -> input_ids / attention_mask / token_type_ids
+  -> input_ids / attention_mask [/ token_type_ids]
   -> ONNX Runtime inference (model.onnx)         LocalVector.Embedder
-  -> last_hidden_state [1, seq, 384]
-  -> mean pooling over tokens + L2 normalize
-  -> 384-dim float32 vector -> JSON array
+  -> last_hidden_state [1, seq, dim]
+  -> pooling (mean / CLS / last) + L2 normalize
+  -> float32 vector -> JSON array
 ```
 
+- **Models** (`LocalVector.Models`) — a small registry: each entry knows its HF
+  repo, pooling mode, dimensionality, and whether it takes `token_type_ids`.
 - **Tokenizer** — a self-contained BERT (uncased) WordPiece tokenizer reading a
   plain `vocab.txt`. No regex/JSON dependencies, so it compiles under both
   Delphi and FPC.
-- **Embedder** — feeds the three int64 inputs, reads the **true** ONNX output
-  shape, mean-pools the token embeddings (sentence-transformers style), and
-  L2-normalizes. If a model variant emits an already-pooled `[1, 384]` vector,
-  that is used directly.
-- **Downloader** — on first run, fetches `model.onnx` (~90 MB) and `vocab.txt`
-  into `models/all-MiniLM-L6-v2/` next to the executable.
+- **Embedder** — feeds the int64 inputs, reads the **true** ONNX output shape,
+  pools the token embeddings per the model's mode, and L2-normalizes. If a model
+  emits an already-pooled `[1, dim]` vector, that is used directly.
+- **Downloader** — on first run, fetches `model.onnx` and `vocab.txt` for the
+  selected model.
 
 ## Build
 
@@ -52,10 +67,10 @@ build_fpc.bat        # Windows
 ```
 
 The whole program builds and runs under FPC. It was verified end-to-end with
-**FPC 3.2.2 + ONNX Runtime 1.26.0 on Linux x64**: it downloads the model,
-embeds text, and the output **matches the Python reference
-(`transformers` + `onnxruntime`) to float precision — cosine `1.0000`,
-max abs diff ~1.5e-8.**
+**FPC 3.2.2 + ONNX Runtime 1.26.0 on Linux x64**: for **both** `minilm` (mean)
+and `bge` (CLS) it downloads the model, embeds text, and the output **matches the
+Python reference (`transformers` + `onnxruntime`) to float precision —
+cosine `1.0000`.**
 
 To make this work, three small, Windows-safe fixes were applied to the bundled
 bindings:
@@ -152,8 +167,9 @@ Where to get a current `onnxruntime.dll`:
 |------|---------|
 | `localvector.dpr` | Program entry point |
 | `src/LocalVector.App.pas` | CLI parsing, orchestration, JSON output |
+| `src/LocalVector.Models.pas` | Model registry (repo, pooling, dim, inputs) |
 | `src/LocalVector.Tokenizer.pas` | BERT WordPiece tokenizer (vocab.txt) |
-| `src/LocalVector.Embedder.pas` | ONNX inference + mean pooling + normalize |
+| `src/LocalVector.Embedder.pas` | ONNX inference + pooling (mean/CLS/last) + normalize |
 | `src/LocalVector.Downloader.pas` | First-run model/vocab download |
 | `src/LocalVector.Runtime.pas` | Reports the loaded onnxruntime DLL + version |
 | `onnxruntime.pas`, `onnxruntime_pas_api.pas` | ONNX Runtime Pascal bindings |

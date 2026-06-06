@@ -1,8 +1,8 @@
 unit LocalVector.Downloader;
 
-{ First-run model acquisition. Downloads the two files localvector needs --
-  model.onnx and vocab.txt -- from the Hugging Face repo
-  onnx-models/all-MiniLM-L6-v2-onnx into a local models directory.
+{ First-run model acquisition. Downloads the two files a WordPiece model needs --
+  the ONNX graph and vocab.txt -- from the Hugging Face repo named in the model
+  spec, into a local models directory.
 
   HTTP is provided by the Delphi RTL (System.Net.HttpClient, TLS via SChannel)
   or, under Free Pascal, by fphttpclient + opensslsockets (needs the OpenSSL
@@ -14,26 +14,28 @@ interface
 
 uses
 {$IFDEF FPC}
-  SysUtils, Classes;
+  SysUtils, Classes,
 {$ELSE}
-  System.SysUtils, System.Classes;
+  System.SysUtils, System.Classes,
 {$ENDIF}
+  LocalVector.Models;
 
 const
-  HF_BASE_URL = 'https://huggingface.co/onnx-models/all-MiniLM-L6-v2-onnx/resolve/main/';
-  MODEL_FILE  = 'model.onnx';
-  VOCAB_FILE  = 'vocab.txt';
+  MODEL_FILE = 'model.onnx';
+  VOCAB_FILE = 'vocab.txt';
 
 type
   TModelDownloader = class
   private
+    FSpec: TModelSpec;
     FModelDir: string;
     FModelPath: string;
     FVocabPath: string;
     FVerbose: Boolean;
     procedure DownloadTo(const AUrl, ADestPath: string);
   public
-    constructor Create(const AModelDir: string; AVerbose: Boolean = False);
+    constructor Create(const ASpec: TModelSpec; const AModelDir: string;
+      AVerbose: Boolean = False);
     { Ensures both files exist locally, downloading whatever is missing. }
     procedure EnsureFiles;
     property ModelPath: string read FModelPath;
@@ -48,8 +50,6 @@ uses
   {$ELSE}
   System.Net.HttpClient, System.Net.URLClient
   {$ENDIF};
-
-{ ---- small helpers ---- }
 
 function JoinPath(const ADir, AName: string): string;
 begin
@@ -71,11 +71,11 @@ begin
   end;
 end;
 
-{ ---- TModelDownloader ---- }
-
-constructor TModelDownloader.Create(const AModelDir: string; AVerbose: Boolean);
+constructor TModelDownloader.Create(const ASpec: TModelSpec; const AModelDir: string;
+  AVerbose: Boolean);
 begin
   inherited Create;
+  FSpec := ASpec;
   FModelDir := AModelDir;
   FVerbose := AVerbose;
   FModelPath := JoinPath(FModelDir, MODEL_FILE);
@@ -118,7 +118,7 @@ begin
   Client := THTTPClient.Create;
   try
     Client.ConnectionTimeout := 30000;
-    Client.ResponseTimeout := 1800000; // up to 30 min for the ~90 MB model
+    Client.ResponseTimeout := 1800000; // up to 30 min for big models
     FS := TFileStream.Create(ADestPath, fmCreate);
     try
       Response := Client.Get(AUrl, FS);
@@ -141,15 +141,19 @@ begin
   if not DirectoryExists(FModelDir) then
     ForceDirectories(FModelDir);
 
+  if FVerbose then
+    WriteLn(ErrOutput, '[localvector] model: ', FSpec.DisplayName,
+            ' (', FSpec.SizeDesc, ')  dir: ', FModelDir);
+
   if not FileExists(FVocabPath) then
-    DownloadTo(HF_BASE_URL + VOCAB_FILE, FVocabPath);
+    DownloadTo(FSpec.BaseURL + FSpec.VocabRelURL, FVocabPath);
 
   // Treat a suspiciously tiny model file as a failed/partial download.
   if (not FileExists(FModelPath)) or (FileSizeOf(FModelPath) < 1024 * 1024) then
   begin
     if FileExists(FModelPath) then
       DeleteFile(FModelPath);
-    DownloadTo(HF_BASE_URL + MODEL_FILE, FModelPath);
+    DownloadTo(FSpec.BaseURL + FSpec.ModelRelURL, FModelPath);
   end;
 end;
 

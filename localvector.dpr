@@ -12,6 +12,7 @@ uses
   onnxruntime_pas_api in 'onnxruntime_pas_api.pas',
   onnxruntime in 'onnxruntime.pas',
   LocalVector.Runtime in 'src/LocalVector.Runtime.pas',
+  LocalVector.Models in 'src/LocalVector.Models.pas',
   LocalVector.Tokenizer in 'src/LocalVector.Tokenizer.pas',
   LocalVector.Embedder in 'src/LocalVector.Embedder.pas',
   LocalVector.Downloader in 'src/LocalVector.Downloader.pas',

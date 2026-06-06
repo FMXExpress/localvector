@@ -1,7 +1,8 @@
 unit LocalVector.App;
 
-{ Minimal command-line front end: take one piece of text and print its
-  384-dimensional embedding as a JSON array on stdout. Diagnostics and progress
+{ Command-line front end: take one piece of text and print its embedding as a
+  JSON array on stdout. A model is chosen with --model (minilm | bge); each
+  preset knows its repo, pooling, and dimensionality. Diagnostics and progress
   go to stderr so stdout stays clean for piping. }
 
 {$IFDEF FPC}{$mode delphi}{$H+}{$ENDIF}
@@ -18,20 +19,21 @@ uses
 {$ELSE}
   System.SysUtils, System.Classes,
 {$ENDIF}
-  LocalVector.Runtime, LocalVector.Tokenizer, LocalVector.Embedder,
-  LocalVector.Downloader;
+  LocalVector.Runtime, LocalVector.Models, LocalVector.Tokenizer,
+  LocalVector.Embedder, LocalVector.Downloader;
 
 const
   APP_NAME    = 'localvector';
-  APP_VERSION = '1.0.0';
-  MODEL_SUBDIR = 'all-MiniLM-L6-v2';
+  APP_VERSION = '1.1.0';
 
 type
   TOptions = record
     Text: string;
     TextFile: string;
-    ModelPath: string;
-    VocabPath: string;
+    ModelName: string;       // preset selector (minilm | bge)
+    ModelPath: string;       // explicit model.onnx override
+    VocabPath: string;       // explicit vocab.txt override
+    PoolingStr: string;      // pooling override ('' = model default)
     MaxLen: Integer;
     Normalize: Boolean;
     Verbose: Boolean;
@@ -44,18 +46,25 @@ type
 procedure PrintHelp;
 begin
   WriteLn(APP_NAME, ' v', APP_VERSION,
-          ' - local sentence embeddings via ONNX Runtime (all-MiniLM-L6-v2)');
+          ' - local sentence embeddings via ONNX Runtime');
   WriteLn;
   WriteLn('Usage:');
   WriteLn('  ', APP_NAME, ' "text to embed"');
+  WriteLn('  ', APP_NAME, ' --model bge "text to embed"');
   WriteLn('  ', APP_NAME, ' --file input.txt');
   WriteLn('  ', APP_NAME, ' --diag');
   WriteLn;
+  WriteLn('Models (--model NAME, default ', DEFAULT_MODEL, '):');
+  WriteLn('      minilm   all-MiniLM-L6-v2   384-d, mean pooling   (~90 MB)');
+  WriteLn('      bge      bge-small-en-v1.5  384-d, CLS pooling    (~133 MB)');
+  WriteLn;
   WriteLn('Options:');
+  WriteLn('  -m, --model NAME     Model preset: ', ModelKeys, '  (default: ', DEFAULT_MODEL, ').');
   WriteLn('  -t, --text <s>       Text to embed (or pass it as the first argument).');
   WriteLn('  -f, --file <path>    Read the input text from a UTF-8 file.');
-  WriteLn('  -m, --model <path>   Path to model.onnx (default: <exe>/models/' + MODEL_SUBDIR + '/model.onnx).');
-  WriteLn('      --vocab <path>   Path to vocab.txt  (default: alongside the model).');
+  WriteLn('      --pooling MODE   Override pooling: mean | cls | last.');
+  WriteLn('      --model-path <p> Path to a custom model.onnx (overrides the preset file).');
+  WriteLn('      --vocab <path>   Path to vocab.txt (default: alongside the model).');
   WriteLn('      --max-length N   Truncate to N tokens incl. [CLS]/[SEP] (default: 256).');
   WriteLn('      --no-normalize   Skip L2 normalization (default: normalized).');
   WriteLn('      --diag           Print the loaded onnxruntime DLL path + version, then exit.');
@@ -63,8 +72,8 @@ begin
   WriteLn('  -h, --help           This help.');
   WriteLn('  -V, --version        Print version.');
   WriteLn;
-  WriteLn('Output: a JSON array of 384 float32 values on stdout.');
-  WriteLn('On first run the model + vocab are downloaded from Hugging Face.');
+  WriteLn('Output: a JSON array of float32 values on stdout.');
+  WriteLn('On first run the chosen model + vocab are downloaded from Hugging Face.');
 end;
 
 function ParseArgs: TOptions;
@@ -83,8 +92,10 @@ var
 begin
   Result.Text := '';
   Result.TextFile := '';
+  Result.ModelName := DEFAULT_MODEL;
   Result.ModelPath := '';
   Result.VocabPath := '';
+  Result.PoolingStr := '';
   Result.MaxLen := 256;
   Result.Normalize := True;
   Result.Verbose := False;
@@ -105,6 +116,10 @@ begin
       Result.ShowDiag := True
     else if (Arg = '-v') or (Arg = '--verbose') then
       Result.Verbose := True
+    else if (Arg = '-m') or (Arg = '--model') then
+      Result.ModelName := Take
+    else if Arg = '--model-path' then
+      Result.ModelPath := Take
     else if (Arg = '-t') or (Arg = '--text') then
     begin
       Result.Text := Take;
@@ -112,8 +127,8 @@ begin
     end
     else if (Arg = '-f') or (Arg = '--file') then
       Result.TextFile := Take
-    else if (Arg = '-m') or (Arg = '--model') then
-      Result.ModelPath := Take
+    else if Arg = '--pooling' then
+      Result.PoolingStr := Take
     else if Arg = '--vocab' then
       Result.VocabPath := Take
     else if Arg = '--max-length' then
@@ -191,6 +206,8 @@ end;
 function RunApp: Integer;
 var
   Opt: TOptions;
+  Spec: TModelSpec;
+  Pooling: TPooling;
   ModelDir: string;
   Downloader: TModelDownloader;
   Tokenizer: TBertTokenizer;
@@ -219,8 +236,21 @@ begin
       Exit(0);
     end;
 
-    // Resolve default model/vocab paths under <exe>/models/all-MiniLM-L6-v2.
-    ModelDir := ExeDir + 'models' + PathDelim + MODEL_SUBDIR;
+    if not FindModelSpec(Opt.ModelName, Spec) then
+      raise Exception.CreateFmt('Unknown model "%s". Available: %s',
+        [Opt.ModelName, ModelKeys]);
+
+    // Pooling: explicit override, otherwise the model's default.
+    if Opt.PoolingStr <> '' then
+    begin
+      if not ParsePooling(Opt.PoolingStr, Pooling) then
+        raise Exception.CreateFmt('Unknown pooling "%s" (mean|cls|last).', [Opt.PoolingStr]);
+    end
+    else
+      Pooling := Spec.Pooling;
+
+    // Resolve default model/vocab paths under <exe>/models/<subdir>.
+    ModelDir := ExeDir + 'models' + PathDelim + Spec.SubDir;
     if Opt.ModelPath = '' then
       Opt.ModelPath := IncludeTrailingPathDelimiter(ModelDir) + MODEL_FILE;
     if Opt.VocabPath = '' then
@@ -232,7 +262,7 @@ begin
 
     if (not FileExists(Opt.ModelPath)) or (not FileExists(Opt.VocabPath)) then
     begin
-      Downloader := TModelDownloader.Create(
+      Downloader := TModelDownloader.Create(Spec,
         ExtractFileDir(Opt.ModelPath), Opt.Verbose);
       try
         Downloader.EnsureFiles;
@@ -246,14 +276,16 @@ begin
     Tokenizer := nil;
     Embedder := nil;
     try
-      Tokenizer := TBertTokenizer.Create(Opt.VocabPath);
+      Tokenizer := TBertTokenizer.Create(Opt.VocabPath, Spec.DoLowerCase);
       Ids := Tokenizer.Encode(Text, Opt.MaxLen);
       if Opt.Verbose then
-        WriteLn(ErrOutput, '[localvector] token count: ', Length(Ids));
+        WriteLn(ErrOutput, '[localvector] model=', Spec.Key,
+                ' token count=', Length(Ids));
 
       Embedder := TEmbedder.Create(Opt.ModelPath);
       Embedder.Load(Opt.Verbose);
-      Vec := Embedder.Embed(Ids, Opt.Normalize, Opt.Verbose);
+      Vec := Embedder.Embed(Ids, Pooling, Spec.NeedsTokenTypeIds,
+                            Opt.Normalize, Opt.Verbose);
 
       WriteLn(VectorToJson(Vec));
     finally

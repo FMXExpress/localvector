@@ -1,12 +1,13 @@
 unit LocalVector.Embedder;
 
-{ Runs an all-MiniLM-L6-v2 style sentence-transformer ONNX model and turns the
-  token-level output into a single normalized sentence embedding.
+{ Runs a sentence-transformer style ONNX model and turns the token-level output
+  into a single normalized sentence embedding.
 
   Inputs fed to the model (all int64, shape [1, seq_len]):
-    input_ids, attention_mask, token_type_ids
+    input_ids, attention_mask, and (optionally) token_type_ids
   Output read back:
-    last_hidden_state [1, seq_len, hidden]  -> mean-pooled over tokens
+    last_hidden_state [1, seq_len, hidden]  -> pooled over tokens via
+    mean / CLS (token 0) / last-token pooling.
   (If a model instead emits an already-pooled [1, hidden] vector, that is used
   directly.) The pooled vector is L2-normalized by default. }
 
@@ -21,7 +22,7 @@ uses
   System.SysUtils, System.Math,
 {$ENDIF}
   onnxruntime_pas_api, onnxruntime,
-  LocalVector.Runtime;
+  LocalVector.Runtime, LocalVector.Models;
 
 type
   EEmbedderError = class(Exception);
@@ -35,7 +36,12 @@ type
     constructor Create(const AModelPath: string);
     destructor Destroy; override;
     procedure Load(AVerbose: Boolean = False);
-    function Embed(const ATokenIds: TArray<Int64>; ANormalize: Boolean = True;
+    { Runs the model and pools the token embeddings into one vector.
+      APooling selects mean / CLS / last-token pooling; ANeedsTokenTypeIds
+      controls whether a token_type_ids input is fed (BERT-style models need it,
+      some models do not). }
+    function Embed(const ATokenIds: TArray<Int64>; APooling: TPooling;
+      ANeedsTokenTypeIds: Boolean; ANormalize: Boolean = True;
       AVerbose: Boolean = False): TArray<Single>;
     property ModelPath: string read FModelPath;
   end;
@@ -110,10 +116,11 @@ begin
   FLoaded := True;
 end;
 
-function TEmbedder.Embed(const ATokenIds: TArray<Int64>; ANormalize: Boolean;
-  AVerbose: Boolean): TArray<Single>;
+function TEmbedder.Embed(const ATokenIds: TArray<Int64>; APooling: TPooling;
+  ANeedsTokenTypeIds: Boolean; ANormalize: Boolean; AVerbose: Boolean): TArray<Single>;
 var
   N, I, T, Dim, SeqLen: Integer;
+  PrePooled: Boolean;
   InputIds, AttnMask, TypeIds: TORTTensor<Int64>;
   OutVal: TORTValue;
   OutTensor: TORTTensor<Single>;
@@ -133,20 +140,25 @@ begin
   // is identical either way.
   InputIds := TORTTensor<Int64>.Create([N, 1]);
   AttnMask := TORTTensor<Int64>.Create([N, 1]);
-  TypeIds  := TORTTensor<Int64>.Create([N, 1]);
   for I := 0 to N - 1 do
   begin
     InputIds.Index1[I] := ATokenIds[I];
     AttnMask.Index1[I] := 1;
-    TypeIds.Index1[I]  := 0;
   end;
 
   Inputs.Add('input_ids',      InputIds.ToValue);
   Inputs.Add('attention_mask', AttnMask.ToValue);
-  Inputs.Add('token_type_ids', TypeIds.ToValue);
+  if ANeedsTokenTypeIds then
+  begin
+    TypeIds := TORTTensor<Int64>.Create([N, 1]);
+    for I := 0 to N - 1 do
+      TypeIds.Index1[I] := 0;
+    Inputs.Add('token_type_ids', TypeIds.ToValue);
+  end;
 
   if AVerbose then
-    WriteLn(ErrOutput, '[localvector] running inference (seq_len=', N, ') ...');
+    WriteLn(ErrOutput, '[localvector] running inference (seq_len=', N,
+                       ', pooling=', PoolingName(APooling), ') ...');
 
   Outputs := FSession.Run(Inputs);
   if Outputs.Count = 0 then
@@ -158,47 +170,59 @@ begin
   RealShape := OutVal.GetTensorTypeAndShapeInfo.GetShape;
   OutTensor := TORTTensor<Single>.FromValue(OutVal);
 
-  // OutTensor.Index1 walks the raw, row-major ONNX buffer:
-  //   element (batch 0, token t, dim d)  ->  Index1[t*Dim + d]
+  // Resolve sequence length / hidden size from the output rank:
+  //   [1, hidden]            -> already pooled
+  //   [1, seq_len, hidden]   -> token embeddings
+  //   [seq_len, hidden]      -> token embeddings (no batch dim)
+  PrePooled := False;
+  SeqLen := 0;
   case Length(RealShape) of
     2:
+      if RealShape[0] = 1 then
       begin
-        if RealShape[0] = 1 then
+        PrePooled := True;
+        Dim := RealShape[1];
+      end
+      else
+      begin
+        SeqLen := RealShape[0];
+        Dim := RealShape[1];
+      end;
+    3:
+      begin
+        SeqLen := RealShape[1];
+        Dim := RealShape[2];
+      end;
+  else
+    raise EEmbedderError.CreateFmt('Unexpected output rank: %d', [Length(RealShape)]);
+  end;
+
+  SetLength(Result, Dim);
+
+  // OutTensor.Index1 walks the raw, row-major ONNX buffer; token t / dim d lives
+  // at Index1[t*Dim + d] (batch 0).
+  if PrePooled then
+  begin
+    for I := 0 to Dim - 1 do
+      Result[I] := OutTensor.Index1[I];
+  end
+  else
+    case APooling of
+      poMean:
         begin
-          // Already pooled: [1, hidden]
-          Dim := RealShape[1];
-          SetLength(Result, Dim);
-          for I := 0 to Dim - 1 do
-            Result[I] := OutTensor.Index1[I];
-        end
-        else
-        begin
-          // [seq_len, hidden] (no batch dim) -> mean pool
-          SeqLen := RealShape[0];
-          Dim := RealShape[1];
-          SetLength(Result, Dim);
           for I := 0 to Dim - 1 do Result[I] := 0;
           for T := 0 to SeqLen - 1 do
             for I := 0 to Dim - 1 do
               Result[I] := Result[I] + OutTensor.Index1[T * Dim + I];
           for I := 0 to Dim - 1 do Result[I] := Result[I] / SeqLen;
         end;
-      end;
-    3:
-      begin
-        // [1, seq_len, hidden] -> mean pool over tokens
-        SeqLen := RealShape[1];
-        Dim := RealShape[2];
-        SetLength(Result, Dim);
-        for I := 0 to Dim - 1 do Result[I] := 0;
-        for T := 0 to SeqLen - 1 do
-          for I := 0 to Dim - 1 do
-            Result[I] := Result[I] + OutTensor.Index1[T * Dim + I];
-        for I := 0 to Dim - 1 do Result[I] := Result[I] / SeqLen;
-      end;
-  else
-    raise EEmbedderError.CreateFmt('Unexpected output rank: %d', [Length(RealShape)]);
-  end;
+      poCLS:
+        for I := 0 to Dim - 1 do
+          Result[I] := OutTensor.Index1[I];                 // token 0 ([CLS])
+      poLast:
+        for I := 0 to Dim - 1 do
+          Result[I] := OutTensor.Index1[(SeqLen - 1) * Dim + I];
+    end;
 
   if ANormalize then
   begin
