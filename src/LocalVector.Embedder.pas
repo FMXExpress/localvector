@@ -71,6 +71,15 @@ begin
     PrintOrtRuntimeInfo;
   end;
 
+  // ONNX Runtime 1.22+ no longer auto-selects the CPU execution provider; a
+  // session created with no EP fails ("No execution providers were provided or
+  // selected"). Make sure the default session options object exists (under FPC
+  // the wrapper's managed initializer may leave it nil) and register the CPU EP
+  // explicitly. This is harmless on older runtimes that added CPU implicitly.
+  if not Assigned(DefaultSessionOptions.p_) then
+    ThrowOnError(GetApi().CreateSessionOptions(PPOrtSessionOptions(@DefaultSessionOptions.p_)));
+  ThrowOnError(OrtSessionOptionsAppendExecutionProvider_CPU(DefaultSessionOptions.p_, 1));
+
   try
     FSession := TORTSession.Create(FModelPath);
   except

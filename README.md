@@ -51,17 +51,27 @@ build_fpc.bat        # Windows
 ./build_fpc.sh       # Linux/macOS
 ```
 
-`localvector`'s own units are written to compile under both Delphi and FPC
-(verified with FPC 3.2.2: the program compiles and the tokenizer's unit tests
-pass). Two caveats for FPC:
+The whole program builds and runs under FPC. It was verified end-to-end with
+**FPC 3.2.2 + ONNX Runtime 1.26.0 on Linux x64**: it downloads the model,
+embeds text, and the output **matches the Python reference
+(`transformers` + `onnxruntime`) to float precision — cosine `1.0000`,
+max abs diff ~1.5e-8.**
 
-- The **bundled ONNX bindings** (`onnxruntime.pas`, `onnxruntime_pas_api.pas`)
-  use Delphi-style unit names (`System.SysUtils`, …). A stock FPC CLI doesn't
-  map those to its RTL, so a full FPC build needs those names reachable — e.g.
-  an FPC whose RTL is namespaced, the Lazarus environment, or thin alias units.
-  Building with Delphi avoids this entirely.
+To make this work, three small, Windows-safe fixes were applied to the bundled
+bindings:
+
+- `onnxruntime_pas_api.pas` — define `size_t` for FPC (it was only defined for
+  Delphi).
+- `onnxruntime.pas` — FPC-friendly RTL unit names, and `TORTSession.Create`
+  now encodes the model path as `char*` on POSIX (`ORTCHAR_T`), keeping the
+  `wchar_t` path on Windows.
+
+Notes:
 - FPC HTTPS downloads go through OpenSSL, so `libssl`/`libcrypto` must be
-  available at runtime.
+  present at runtime. On a stock FPC install you may also need the
+  `rtl-generics`, `fcl-web`, and `openssl` unit paths on the search path.
+- On non-Windows you must supply a matching `onnxruntime` shared library on the
+  loader path (`LD_LIBRARY_PATH` / rpath).
 
 ## Run
 
@@ -122,9 +132,14 @@ Where to get a current `onnxruntime.dll`:
   → copy `lib\onnxruntime.dll` next to `localvector.exe`, or
 - NuGet `Microsoft.ML.OnnxRuntime` → `runtimes/win-x64/native/onnxruntime.dll`.
 
-> Verified: the `LocalVector.Runtime` diagnostic, linked against the real
-> ONNX Runtime **1.26.0** library, reports `version 1.26.0` and
-> `GetApi(ORT_API_VERSION=10) = True` — i.e. 1.26 supports the model's IR v10.
+> Verified against the real ONNX Runtime **1.26.0**: `--diag` reports
+> `version 1.26.0`, `GetApi(ORT_API_VERSION=10) = True`, and a full embedding
+> run matches the Python reference to float precision (cosine `1.0000`).
+
+> **ONNX Runtime 1.22+ note:** newer runtimes no longer auto-select an
+> execution provider, so `localvector` registers the **CPU EP** explicitly
+> before creating the session (`OrtSessionOptionsAppendExecutionProvider_CPU`).
+> Without an EP, ORT raises *"No execution providers were provided or selected."*
 
 > The bindings request `ORT_API_VERSION = 10` (define `ONNX_NEW_VERSION` for 13).
 > A *lower* request is intentionally compatible with the widest range of DLLs —
