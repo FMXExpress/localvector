@@ -19,14 +19,14 @@ interface
 uses
   System.SysUtils, System.Classes, System.Generics.Collections,
   Data.DB, FireDAC.Stan.Intf, FireDAC.Stan.Def, FireDAC.Stan.Param,
-  FireDAC.Phys, FireDAC.Phys.SQLite, FireDAC.DApt,
-  FireDAC.Comp.Client,
+  FireDAC.Phys, FireDAC.Phys.SQLite,
+  FireDAC.Phys.SQLiteWrapper.Stat,   // statically link SQLite (no external DLL/bitness)
+  FireDAC.DApt, FireDAC.Comp.Client,
   LocalVector.VectorStore;
 
 type
   TFireDACVectorStore = class(TInterfacedObject, IVectorStore)
   private
-    FLink: TFDPhysSQLiteDriverLink;
     FConn: TFDConnection;
     FDim: Integer;
     FModel: string;
@@ -74,12 +74,9 @@ end;
 
 procedure TFireDACVectorStore.OpenStore(const ADbPath, AVecExtPath: string);
 begin
-  // External, extension-enabled sqlite3.dll on the exe path. Setting VendorLib
-  // makes FireDAC use this DLL instead of its bundled SQLite (whose
-  // load_extension is disabled).
-  FLink := TFDPhysSQLiteDriverLink.Create(nil);
-  FLink.VendorLib := 'sqlite3.dll';
-
+  // SQLite is statically linked (FireDAC.Phys.SQLiteWrapper.Stat), so it matches
+  // the exe bitness with no external sqlite3.dll. Extensions=True enables
+  // load_extension so the vec0 extension can be loaded below.
   FConn := TFDConnection.Create(nil);
   FConn.LoginPrompt := False;
   FConn.Params.DriverID := 'SQLite';
@@ -356,8 +353,6 @@ begin
     FConn.Connected := False;
     FreeAndNil(FConn);
   end;
-  if Assigned(FLink) then
-    FreeAndNil(FLink);
 end;
 
 {$ENDIF}
