@@ -875,6 +875,10 @@ type
     function GetAvailableProviders():TArray<ortstring>;inline;
     procedure ThrowOnError(const ort:POrtApi ; status: POrtStatus);inline; overload;
     procedure ThrowOnError(status:POrtStatus);inline; overload;
+    { Creates the default env / session-options / run-options objects once a
+      runtime has been loaded (no-op until GetApi is available). Call after
+      LoadOnnxRuntime + InitOrtApi. }
+    procedure EnsureOrtDefaults;
     function GetApi:POrtApi;
     function AllocatorGetMemoryInfo(const Allocator:POrtAllocator):TORTMemoryInfo;
     function OrtTensorType(const typinf:PTypeInfo):ONNXTensorElementDataType;
@@ -3498,11 +3502,34 @@ begin
   inherited CreateFmt('Code [%d]: %s',[Ord(code),str]);
 end;
 
+procedure EnsureOrtDefaults;
+begin
+  if GetApi = nil then
+    Exit;
+  if not Assigned(DefaultAllocator.p_) then
+    ThrowOnError(GetApi().GetAllocatorWithDefaultOptions(@DefaultAllocator.p_));
+  if not Assigned(DefaultEnv.p_) then
+    DefaultEnv := TORTEnv.Create(ORT_LOGGING_LEVEL_WARNING, POrtChar(DEFAULT_LOGID));
+  if not Assigned(DefaultSessionOptions.p_) then
+  begin
+    ThrowOnError(GetApi().CreateSessionOptions(PPOrtSessionOptions(@DefaultSessionOptions.p_)));
+    DefaultSessionOptions.NewRef;
+  end;
+  if not Assigned(DefaultRunOptions.p_) then
+  begin
+    ThrowOnError(GetApi().CreateRunOptions(PPOrtRunOptions(@DefaultRunOptions.p_)));
+    DefaultRunOptions.NewRef;
+  end;
+end;
+
 
 initialization
 
-
-  DefaultEnv:=TORTEnv.Create(ORT_LOGGING_LEVEL_WARNING, POrtChar(DEFAULT_LOGID) );
+  // ONNX Runtime is loaded dynamically by the application; if no runtime is
+  // loaded yet, Api is nil and we defer creating the default env (see
+  // EnsureOrtDefaults, called once the library has been loaded).
+  if GetApi <> nil then
+    DefaultEnv:=TORTEnv.Create(ORT_LOGGING_LEVEL_WARNING, POrtChar(DEFAULT_LOGID) );
 
   //if not assigned(DefaultSessionOptions.p_) then begin
   //  ThrowOnError(Api.CreateSessionOptions(@DefaultSessionOptions.p_));
@@ -3514,12 +3541,14 @@ initialization
   //  DefaultRunOptions.NewRef();
   //end
 finalization
-  GetApi().ReleaseRunOptions(DefaultRunOptions.p_);
-  GetApi().ReleaseSessionOptions(DefaultSessionOptions.p_);
-  GetApi().ReleaseEnv(DefaultEnv.p_);
-
-  if Assigned(@HouseKeeper) then
-    if IsConsole then writeLn('Housekeeper :');
+  // Only release if a runtime was actually loaded (GetApi/Api may be nil when
+  // onnxruntime was never found/loaded).
+  if GetApi <> nil then
+  begin
+    GetApi().ReleaseRunOptions(DefaultRunOptions.p_);
+    GetApi().ReleaseSessionOptions(DefaultSessionOptions.p_);
+    GetApi().ReleaseEnv(DefaultEnv.p_);
+  end;
 
 
 end.

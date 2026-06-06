@@ -54,6 +54,7 @@
         <DCCReference Include="onnxruntime_pas_api.pas"/>
         <DCCReference Include="onnxruntime.pas"/>
         <DCCReference Include="src\LocalVector.Runtime.pas"/>
+        <DCCReference Include="src\LocalVector.OrtProvision.pas"/>
         <DCCReference Include="src\LocalVector.Models.pas"/>
         <DCCReference Include="src\LocalVector.Tokenizer.pas"/>
         <DCCReference Include="src\LocalVector.Embedder.pas"/>

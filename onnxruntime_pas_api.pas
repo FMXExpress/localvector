@@ -31,13 +31,27 @@ interface
     {$MACRO ON}
     {$PACKRECORDS C}
     {$PackEnum 4}
-    type size_t = NativeUInt; // FPC: pointer-sized unsigned, matches C size_t
   {$else}
     {$Z4}
-    type size_t=UInt64; // delphi?
-
   {$ENDIF}
   {$define ORT_API_CALL:=stdcall}
+
+// ONNX Runtime is loaded dynamically (see LoadOnnxRuntime below) so the program
+// can start with no runtime present and provision one at run time.
+uses
+{$IFDEF FPC}
+  dynlibs
+{$ELSE}
+  {$IFDEF MSWINDOWS}Winapi.Windows{$ELSE}Posix.Dlfcn{$ENDIF}
+{$ENDIF}
+  ;
+
+type
+{$IFDEF FPC}
+  size_t = NativeUInt; // FPC: pointer-sized unsigned, matches C size_t
+{$ELSE}
+  size_t = UInt64;     // Delphi
+{$ENDIF}
 
   {$ifdef MSWINDOWS}
   const dllname='onnxruntime.dll';
@@ -950,23 +964,35 @@ interface
 
   const DefaultLanguageProjection = OrtLanguageProjection.ORT_PROJECTION_CPLUSPLUS;
 
+type
+  TOrtLibHandle = {$IFDEF FPC}TLibHandle{$ELSE}HMODULE{$ENDIF};
+  TfnOrtGetApiBase = function: POrtApiBase; cdecl;
+  TfnOrtAppendCPU = function(options: POrtSessionOptions; use_arena: longint): POrtStatus; cdecl;
+  TfnOrtAppendDev = function(options: POrtSessionOptions; device_id: longint): POrtStatus; cdecl;
+  TfnOrtAppendDML = function(const options: POrtSessionOptions; const device_id: longint): POrtStatus; cdecl;
+  TfnOrtAppendDMLEx = function(const options: POrtSessionOptions; dml_device: Pointer; const cmd_queue: Pointer): POrtStatus; stdcall;
+
 var
-  Global : POrtApiBase;
-  Api: POrtApi;
+  Global : POrtApiBase = nil;
+  Api: POrtApi = nil;
 
-  function OrtGetApiBase:POrtApiBase;cdecl;  external dllname;
+  // Entry points resolved dynamically from the loaded onnxruntime library
+  // (these were static `external dllname` imports). Nil until LoadOnnxRuntime.
+  OrtGetApiBase: TfnOrtGetApiBase = nil;
+  OrtSessionOptionsAppendExecutionProvider_CPU: TfnOrtAppendCPU = nil;
+  OrtSessionOptionsAppendExecutionProvider_CUDA: TfnOrtAppendDev = nil;
+  OrtSessionOptionsAppendExecutionProvider_MIGraphX: TfnOrtAppendDev = nil;
+  OrtSessionOptionsAppendExecutionProvider_Tensorrt: TfnOrtAppendDev = nil;
 
-(**
- * \param use_arena zero: false. non-zero: true.
- *)
-
-  function OrtSessionOptionsAppendExecutionProvider_CPU(options: POrtSessionOptions; use_arena: longint):POrtStatus;cdecl;       external dllname;
-
-  function OrtSessionOptionsAppendExecutionProvider_CUDA(options: POrtSessionOptions; device_id: longint):POrtStatus;cdecl;      external dllname;
-
-  function OrtSessionOptionsAppendExecutionProvider_MIGraphX(options: POrtSessionOptions; device_id: longint):POrtStatus;cdecl;  external dllname;
-  //
-  function OrtSessionOptionsAppendExecutionProvider_Tensorrt(options: POrtSessionOptions; device_id: longint):POrtStatus;cdecl;  external dllname;
+{ Loads the onnxruntime shared library from APath (or the platform default name
+  when APath is empty) and resolves the entry points. Returns True once
+  OrtGetApiBase is available. Safe to call more than once. }
+function LoadOnnxRuntime(const APath: string): Boolean;
+{ Calls OrtGetApiBase()->GetApi(ORT_API_VERSION) and caches Global/Api.
+  Returns True if a usable OrtApi was obtained. }
+function InitOrtApi: Boolean;
+function OrtRuntimeLoaded: Boolean;
+function OrtRuntimeLibHandle: TOrtLibHandle;
 (**
  * [[deprecated]]
  * This export is deprecated.
@@ -977,7 +1003,7 @@ var
  * IDXGIFactory::EnumAdapters. A device_id of 0 always corresponds to the default adapter, which is typically the
  * primary display GPU installed on the system. A negative device_id is invalid.
  *)
-  function OrtSessionOptionsAppendExecutionProvider_DML(const options: POrtSessionOptions ;const  device_id:longint):POrtStatus; cdecl;external dllname;
+var OrtSessionOptionsAppendExecutionProvider_DML: TfnOrtAppendDML = nil;
 
   (**
  * [[deprecated]]
@@ -992,9 +1018,7 @@ var
  * See also: DMLCreateDevice
  * See also: ID3D12Device::CreateCommandQueue
  *)
-function OrtSessionOptionsAppendExecutionProviderEx_DML(
-  const options:POrtSessionOptions; dml_device:Pointer {IDMLDevice*};
-  const cmd_queue:Pointer {ID3D12CommandQueue*}):POrtStatus;   stdcall;external dllname;
+var OrtSessionOptionsAppendExecutionProviderEx_DML: TfnOrtAppendDMLEx = nil;
 
 
 implementation
@@ -1015,14 +1039,79 @@ begin
   dest.do_copy_in_default_stream:=1;
 end;
 
-//var s:POrtChar;
-initialization
-  Global:=OrtGetApiBase;
-  Api:=Global.GetApi(ORT_API_VERSION);
-  if not Assigned(Api) and isConsole then begin
-    writeln('Cannot load ONNXRuntime API, possibly wrong version');
-    writeln(' - requested version [',ORT_API_VERSION,']');
-    writeLn(' - CurrentVersion[',global.GetVersionString,']');
+var
+  _OrtLib: TOrtLibHandle = 0;
+
+function ortDoLoad(const AName: string): TOrtLibHandle;
+begin
+{$IFDEF FPC}
+  Result := LoadLibrary(AName);
+{$ELSE}
+  Result := LoadLibrary(PChar(AName));
+{$ENDIF}
+end;
+
+function ortDoGetProc(AHandle: TOrtLibHandle; const AName: string): Pointer;
+begin
+{$IFDEF FPC}
+  Result := GetProcedureAddress(AHandle, AName);
+{$ELSE}
+  Result := GetProcAddress(AHandle, PAnsiChar(AnsiString(AName)));
+{$ENDIF}
+end;
+
+function OrtRuntimeLoaded: Boolean;
+begin
+  Result := _OrtLib <> 0;
+end;
+
+function OrtRuntimeLibHandle: TOrtLibHandle;
+begin
+  Result := _OrtLib;
+end;
+
+function LoadOnnxRuntime(const APath: string): Boolean;
+begin
+  if _OrtLib = 0 then
+  begin
+    if APath <> '' then
+      _OrtLib := ortDoLoad(APath)
+    else
+      _OrtLib := ortDoLoad(dllname);
   end;
+  if _OrtLib = 0 then
+    Exit(False);
+
+  if not Assigned(OrtGetApiBase) then
+    OrtGetApiBase := TfnOrtGetApiBase(ortDoGetProc(_OrtLib, 'OrtGetApiBase'));
+  if not Assigned(OrtSessionOptionsAppendExecutionProvider_CPU) then
+    OrtSessionOptionsAppendExecutionProvider_CPU :=
+      TfnOrtAppendCPU(ortDoGetProc(_OrtLib, 'OrtSessionOptionsAppendExecutionProvider_CPU'));
+  // Optional providers - resolved best-effort (nil if not present in this build).
+  if not Assigned(OrtSessionOptionsAppendExecutionProvider_CUDA) then
+    OrtSessionOptionsAppendExecutionProvider_CUDA :=
+      TfnOrtAppendDev(ortDoGetProc(_OrtLib, 'OrtSessionOptionsAppendExecutionProvider_CUDA'));
+  if not Assigned(OrtSessionOptionsAppendExecutionProvider_DML) then
+    OrtSessionOptionsAppendExecutionProvider_DML :=
+      TfnOrtAppendDML(ortDoGetProc(_OrtLib, 'OrtSessionOptionsAppendExecutionProvider_DML'));
+
+  Result := Assigned(OrtGetApiBase);
+end;
+
+function InitOrtApi: Boolean;
+begin
+  if Assigned(OrtGetApiBase) then
+  begin
+    Global := OrtGetApiBase();
+    if Assigned(Global) then
+      Api := Global.GetApi(ORT_API_VERSION);
+  end;
+  Result := Assigned(Api);
+end;
+
+initialization
+  // No auto-load: the application calls LoadOnnxRuntime + InitOrtApi after it has
+  // located (or downloaded) a runtime. The wrapper's Default* objects initialise
+  // lazily and tolerate Api = nil until then.
 
 end.

@@ -19,8 +19,8 @@ uses
 {$ELSE}
   System.SysUtils, System.Classes,
 {$ENDIF}
-  LocalVector.Runtime, LocalVector.Models, LocalVector.Tokenizer,
-  LocalVector.Embedder, LocalVector.Downloader;
+  LocalVector.Runtime, LocalVector.OrtProvision, LocalVector.Models,
+  LocalVector.Tokenizer, LocalVector.Embedder, LocalVector.Downloader;
 
 const
   APP_NAME    = 'localvector';
@@ -232,6 +232,12 @@ begin
     end;
     if Opt.ShowDiag then
     begin
+      try
+        EnsureOnnxRuntime(ExeDir, True, Opt.Verbose);
+      except
+        on E: Exception do
+          WriteLn(ErrOutput, '[localvector] ', E.Message);
+      end;
       PrintOrtRuntimeInfo;
       Exit(0);
     end;
@@ -281,6 +287,10 @@ begin
       if Opt.Verbose then
         WriteLn(ErrOutput, '[localvector] model=', Spec.Key,
                 ' token count=', Length(Ids));
+
+      // Make sure an ONNX Runtime is loaded (downloading one if needed) before
+      // we build a session.
+      EnsureOnnxRuntime(ExeDir, True, Opt.Verbose);
 
       Embedder := TEmbedder.Create(Opt.ModelPath);
       Embedder.Load(Opt.Verbose);
