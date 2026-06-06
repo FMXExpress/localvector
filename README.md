@@ -1,8 +1,8 @@
 # localvector
 
-A small **Delphi / Object Pascal** command-line tool that produces **local
-sentence embeddings** with **ONNX Runtime**. Give it text, get back an embedding
-vector as JSON.
+A small **Delphi / Object Pascal** CLI for **local sentence embeddings** and
+**hybrid (keyword + vector) search**, powered by **ONNX Runtime** and
+**sqlite-vec**. Embed text to a JSON vector, or index a file and search it.
 
 It uses the ONNX Runtime Pascal bindings already in this repo
 (`onnxruntime.pas`, `onnxruntime_pas_api.pas`) and follows the same approach as
@@ -10,12 +10,40 @@ It uses the ONNX Runtime Pascal bindings already in this repo
 load `onnxruntime.dll`, build input tensors, run, read outputs.
 
 ```
-localvector "The quick brown fox jumps over the lazy dog"
-[0.0419,-0.0213,0.0688, ... ,0.0157]      # 384 floats
+localvector "The quick brown fox jumps over the lazy dog"   # -> 384-float JSON
+localvector --model bge "the quick brown fox"               # CLS-pooled
 
-localvector --model bge "The quick brown fox jumps over the lazy dog"
-[-0.1047,-0.0224,-0.0126, ... ]            # 384 floats, CLS-pooled
+localvector index notes.txt --db notes.db                   # build a hybrid index
+localvector search "sleepy cat in the sun" --db notes.db    # FTS5 + vector, fused
 ```
+
+## Vector search (hybrid)
+
+`index` splits a file into chunks (paragraphs by default), embeds each, and
+stores them in a SQLite database with **two indexes over the same rows**: an
+**FTS5** full-text index (BM25 keyword ranking) and a **vec0** vector index
+(sqlite-vec, KNN). `search` queries both and fuses the rankings with
+**Reciprocal Rank Fusion** — so you get keyword precision *and* semantic recall.
+
+```
+localvector index docs.txt --db docs.db [--model bge] [--chunk paragraphs|lines]
+localvector search "query" --db docs.db [--k 5] [--mode hybrid|vector|keyword]
+```
+
+The `vec0` extension is auto-downloaded from the sqlite-vec GitHub release on
+first use (like the onnxruntime auto-provision). The query reuses whatever model
+the index was built with (stored in the DB).
+
+**SQLite backends** (selected behind `IVectorStore`):
+- **FireDAC** — the default Delphi backend. Needs an **extension-enabled**
+  `sqlite3.dll` (FireDAC's bundled SQLite blocks `load_extension`) plus the
+  auto-downloaded `vec0.dll` next to the exe; it sets a dynamic
+  `TFDPhysSQLiteDriverLink` (`VendorLib='sqlite3.dll'`) + `Extensions=True` and
+  runs `SELECT load_extension(...)`.
+- **Portable** — a small dynamically-loaded `sqlite3` binding (system
+  `libsqlite3` on POSIX / `sqlite3.dll` on Windows). Used by the FPC build and
+  by Delphi when `LV_PORTABLE_SQLITE` is defined. This is the path validated
+  end-to-end on Linux.
 
 ## Models
 
@@ -174,4 +202,9 @@ from the [v1.26.0 release](https://github.com/microsoft/onnxruntime/releases/tag
 | `src/LocalVector.Embedder.pas` | ONNX inference + pooling (mean/CLS/last) + normalize |
 | `src/LocalVector.Downloader.pas` | First-run model/vocab download |
 | `src/LocalVector.Runtime.pas` | Reports the loaded onnxruntime DLL + version |
+| `src/LocalVector.VecProvision.pas` | First-run sqlite-vec (vec0) download + tar.gz extract |
+| `src/LocalVector.VectorStore.pas` | `IVectorStore`, chunking, FTS5 query build, RRF fusion |
+| `src/LocalVector.VectorStore.Sqlite.pas` | Portable backend (dynamic sqlite3 + vec0 + FTS5) |
+| `src/LocalVector.VectorStore.FireDAC.pas` | FireDAC backend (Delphi default) |
+| `src/LocalVector.Sqlite3.pas` | Minimal dynamic sqlite3 C-API binding (portable backend) |
 | `onnxruntime.pas`, `onnxruntime_pas_api.pas` | ONNX Runtime Pascal bindings |
