@@ -59,6 +59,11 @@
         <DCCReference Include="src\LocalVector.Tokenizer.pas"/>
         <DCCReference Include="src\LocalVector.Embedder.pas"/>
         <DCCReference Include="src\LocalVector.Downloader.pas"/>
+        <DCCReference Include="src\LocalVector.VecProvision.pas"/>
+        <DCCReference Include="src\LocalVector.VectorStore.pas"/>
+        <DCCReference Include="src\LocalVector.VectorStore.FireDAC.pas"/>
+        <DCCReference Include="src\LocalVector.VectorStore.Sqlite.pas"/>
+        <DCCReference Include="src\LocalVector.Sqlite3.pas"/>
         <DCCReference Include="src\LocalVector.App.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
