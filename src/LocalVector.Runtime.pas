@@ -2,13 +2,9 @@ unit LocalVector.Runtime;
 
 { ONNX Runtime diagnostics.
 
-  The Pascal bindings link onnxruntime.dll as a static import, so *which*
-  onnxruntime.dll is used is decided entirely by the OS loader search order
-  (for a plain console exe: the executable's own directory first, then
-  System32, ...). This unit lets the program report -- at runtime -- the exact
-  shared-library file that was loaded and the version it reports, so there is
-  never any doubt about whether the app picked up a local DLL or the one that
-  ships inside Windows. }
+  The bindings load onnxruntime dynamically (LoadOnnxRuntime), so this unit
+  reports the file that was actually loaded and the version it returns -- no
+  guessing whether the app picked up a local DLL or the one inside Windows. }
 
 {$IFDEF FPC}{$mode delphi}{$H+}{$ENDIF}
 
@@ -59,29 +55,21 @@ uses
   {$IFDEF FPC}Windows{$ELSE}Winapi.Windows{$ENDIF};
 {$ENDIF}
 
-{ Resolve OrtGetApiBase independently of the bindings (same exported symbol,
-  different Pascal name) so we can read the version without touching the
-  bindings' private globals. }
-function lvOrtGetApiBase: POrtApiBase; cdecl; external ORT_LIB name 'OrtGetApiBase';
-
 {$IFDEF MSWINDOWS}
-function GetLoadedModulePath(const AName: string): string;
+function ModulePathForHandle(H: HMODULE): string;
 var
-  H: HMODULE;
   Buf: array[0..1023] of WideChar;
   N: DWORD;
   W: WideString;
 begin
   Result := '';
-  H := GetModuleHandleW(PWideChar(WideString(AName)));
-  if H <> 0 then
+  if H = 0 then
+    Exit;
+  N := GetModuleFileNameW(H, @Buf[0], Length(Buf));
+  if N > 0 then
   begin
-    N := GetModuleFileNameW(H, @Buf[0], Length(Buf));
-    if N > 0 then
-    begin
-      W := PWideChar(@Buf[0]);
-      Result := string(W);
-    end;
+    W := PWideChar(@Buf[0]);
+    Result := string(W);
   end;
 end;
 {$ENDIF}
@@ -98,14 +86,19 @@ begin
   Result.BaseAvailable := False;
 
   {$IFDEF MSWINDOWS}
-  Result.DllPath := GetLoadedModulePath(ORT_LIB);
+  if OrtRuntimeLibHandle <> 0 then
+    Result.DllPath := ModulePathForHandle(HMODULE(OrtRuntimeLibHandle))
+  else
+    Result.DllPath := ModulePathForHandle(GetModuleHandleW(PWideChar(WideString(ORT_LIB))));
   {$ENDIF}
 
-  try
-    Base := lvOrtGetApiBase;
-  except
-    Base := nil;
-  end;
+  Base := nil;
+  if Assigned(OrtGetApiBase) then
+    try
+      Base := OrtGetApiBase();
+    except
+      Base := nil;
+    end;
 
   if Base <> nil then
   begin

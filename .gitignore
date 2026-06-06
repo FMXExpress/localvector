@@ -5,6 +5,8 @@ models/
 onnxruntime.dll
 onnxruntime.so
 onnxruntime.dylib
+onnxruntime-*.zip
+onnxruntime-*.tgz
 
 # Delphi / FPC build output
 *.exe

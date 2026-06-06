@@ -26,8 +26,10 @@ vocab are downloaded into `models/<name>/` next to the executable.
 |-----------|-------|-----|---------|------|--------|
 | `minilm`  | all-MiniLM-L6-v2 | 384 | mean | ~90 MB | [onnx-models/all-MiniLM-L6-v2-onnx](https://huggingface.co/onnx-models/all-MiniLM-L6-v2-onnx) |
 | `bge`     | bge-small-en-v1.5 | 384 | CLS | ~133 MB | [Xenova/bge-small-en-v1.5](https://huggingface.co/Xenova/bge-small-en-v1.5) |
+| `mxbai`   | mxbai-embed-large-v1 (int8) | 1024 | CLS | ~337 MB | [mixedbread-ai/mxbai-embed-large-v1](https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1) |
 
-Both are BERT/WordPiece models. `--pooling mean|cls|last` overrides the default.
+All three are BERT/WordPiece models (`mxbai` is the quantized int8 export).
+`--pooling mean|cls|last` overrides the default.
 
 ## How it works
 
@@ -72,21 +74,25 @@ and `bge` (CLS) it downloads the model, embeds text, and the output **matches th
 Python reference (`transformers` + `onnxruntime`) to float precision —
 cosine `1.0000`.**
 
-To make this work, three small, Windows-safe fixes were applied to the bundled
+To make this work, a few small, Windows-safe changes were applied to the bundled
 bindings:
 
-- `onnxruntime_pas_api.pas` — define `size_t` for FPC (it was only defined for
-  Delphi).
-- `onnxruntime.pas` — FPC-friendly RTL unit names, and `TORTSession.Create`
-  now encodes the model path as `char*` on POSIX (`ORTCHAR_T`), keeping the
-  `wchar_t` path on Windows.
+- `onnxruntime_pas_api.pas` — define `size_t` for FPC; **load onnxruntime
+  dynamically** (`LoadOnnxRuntime`/`InitOrtApi`) instead of as a static import,
+  so the program starts even when no runtime is present.
+- `onnxruntime.pas` — FPC-friendly RTL unit names; `TORTSession.Create` encodes
+  the model path as `char*` on POSIX (`ORTCHAR_T`), keeping `wchar_t` on
+  Windows; `EnsureOrtDefaults` (re)creates the default env/options/allocator
+  after the runtime is loaded; init/finalization tolerate a not-yet-loaded
+  runtime.
 
 Notes:
 - FPC HTTPS downloads go through OpenSSL, so `libssl`/`libcrypto` must be
   present at runtime. On a stock FPC install you may also need the
-  `rtl-generics`, `fcl-web`, and `openssl` unit paths on the search path.
+  `rtl-generics`, `fcl-web`, `openssl`, and `paszlib` unit paths on the search
+  path.
 - On non-Windows you must supply a matching `onnxruntime` shared library on the
-  loader path (`LD_LIBRARY_PATH` / rpath).
+  loader path (`LD_LIBRARY_PATH` / rpath); auto-download is Windows-x64 only.
 
 ## Run
 
@@ -102,33 +108,20 @@ Options: `-t/--text`, `-f/--file`, `-m/--model`, `--vocab`, `--max-length N`
 `-V/--version`. The JSON vector is written to **stdout**; everything else goes
 to **stderr**, so `localvector "x" > vec.json` is clean.
 
-## The onnxruntime.dll that matters (read this)
+## The onnxruntime runtime (auto-provisioned)
 
-ONNX Runtime ships inside recent Windows, but **the in-box copy can be old**.
-The bindings link `onnxruntime.dll` as a static import, so **the OS loader picks
-the DLL**, not the program. For a plain console exe the search order is:
+ONNX Runtime ships inside recent Windows, but **the in-box copy is often old**.
+`localvector` **loads onnxruntime dynamically** (not as a static import), so it
+controls exactly which library is used:
 
-1. the **executable's own directory** (your `Win64\Release` / `Win64\Debug`
-   output folder — *not* the project folder),
-2. then `C:\Windows\System32\` (the in-box copy),
-3. then the rest of the search path.
+1. If `onnxruntime.dll` sits **next to the executable**, that one is used.
+2. Otherwise, on first run (Windows x64), it **downloads ONNX Runtime
+   v1.26.0** from the official GitHub release and extracts `onnxruntime.dll`
+   next to the exe — so you get a current runtime (IR v10 capable) without
+   touching the old in-box copy.
+3. Failing that, it falls back to the system loader (`PATH` / in-box DLL).
 
-So a newer `onnxruntime.dll` only wins if it sits **next to the built `.exe`**.
-
-### Symptom: "Unsupported model IR version"
-
-```
-Load model from ...\model.onnx failed:
-onnxruntime::Model::Model Unsupported model IR version: 10, max supported IR version: 8
-```
-
-This means an **old** runtime got loaded (max IR 8 ≈ ORT 1.12, the typical
-in-box build) while modern Hugging Face exports are **IR version 10**. The old
-runtime refuses to load the graph. This is a runtime-too-old-for-model
-mismatch — not a bug in the model or this code.
-
-**Fix:** put a current `onnxruntime.dll` (**≥ 1.17**, which supports IR 10) in
-the same folder as `localvector.exe`, then confirm:
+Check what actually loaded with `--diag`:
 
 ```
 localvector --diag
@@ -138,18 +131,26 @@ localvector --diag
 [localvector]   bindings ask: ORT_API_VERSION 10  (GetApi True)
 ```
 
-If `--diag` reports a `System32` path or an old version, the right DLL is not
-next to the exe.
+On Linux/macOS there is no auto-download: provide an `onnxruntime` shared
+library next to the exe or on the loader path (`LD_LIBRARY_PATH`).
 
-Where to get a current `onnxruntime.dll`:
-- ONNX Runtime GitHub release **v1.26.0** → asset
-  [`onnxruntime-win-x64-1.26.0.zip`](https://github.com/microsoft/onnxruntime/releases/tag/v1.26.0)
-  → copy `lib\onnxruntime.dll` next to `localvector.exe`, or
-- NuGet `Microsoft.ML.OnnxRuntime` → `runtimes/win-x64/native/onnxruntime.dll`.
+### Symptom: "Unsupported model IR version"
+
+```
+onnxruntime::Model::Model Unsupported model IR version: 10, max supported IR version: 8
+```
+
+If you ever see this, an **old** runtime was loaded (max IR 8 ≈ ORT 1.12) — e.g.
+an old `onnxruntime.dll` you placed next to the exe, or a system fallback when
+the download was blocked. Modern HF exports are **IR v10** (needs ORT ≥ ~1.17).
+Delete the stale `onnxruntime.dll` (so it re-downloads) or drop in a current one
+from the [v1.26.0 release](https://github.com/microsoft/onnxruntime/releases/tag/v1.26.0)
+(`onnxruntime-win-x64-1.26.0.zip` → `lib\onnxruntime.dll`).
 
 > Verified against the real ONNX Runtime **1.26.0**: `--diag` reports
-> `version 1.26.0`, `GetApi(ORT_API_VERSION=10) = True`, and a full embedding
-> run matches the Python reference to float precision (cosine `1.0000`).
+> `version 1.26.0`, `GetApi(ORT_API_VERSION=10) = True`, and full embedding runs
+> for all three models match the Python reference to float precision
+> (cosine `1.0000`).
 
 > **ONNX Runtime 1.22+ note:** newer runtimes no longer auto-select an
 > execution provider, so `localvector` registers the **CPU EP** explicitly
@@ -168,6 +169,7 @@ Where to get a current `onnxruntime.dll`:
 | `localvector.dpr` | Program entry point |
 | `src/LocalVector.App.pas` | CLI parsing, orchestration, JSON output |
 | `src/LocalVector.Models.pas` | Model registry (repo, pooling, dim, inputs) |
+| `src/LocalVector.OrtProvision.pas` | Dynamic runtime load + first-run onnxruntime download |
 | `src/LocalVector.Tokenizer.pas` | BERT WordPiece tokenizer (vocab.txt) |
 | `src/LocalVector.Embedder.pas` | ONNX inference + pooling (mean/CLS/last) + normalize |
 | `src/LocalVector.Downloader.pas` | First-run model/vocab download |

@@ -77,13 +77,18 @@ begin
     ASpec := MakeSpec('bge', 'bge-small-en-v1.5', 'bge-small-en-v1.5',
       'https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main/',
       'onnx/model.onnx', 'vocab.txt', poCLS, True, True, 384, '~133 MB')
+  else if (K = 'mxbai') or (K = 'mxbai-large') or (K = 'mxbai-embed-large') or (K = 'mixedbread') then
+    // Quantized (int8) export. Same BERT/WordPiece + CLS pooling as bge, 1024-d.
+    ASpec := MakeSpec('mxbai', 'mxbai-embed-large-v1 (int8)', 'mxbai-embed-large-v1',
+      'https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1/resolve/main/',
+      'onnx/model_quantized.onnx', 'vocab.txt', poCLS, True, True, 1024, '~337 MB')
   else
     Result := False;
 end;
 
 function ModelKeys: string;
 begin
-  Result := 'minilm, bge';
+  Result := 'minilm, bge, mxbai';
 end;
 
 function ParsePooling(const AStr: string; out APooling: TPooling): Boolean;
