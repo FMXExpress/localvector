@@ -19,7 +19,7 @@ interface
 uses
   System.SysUtils, System.Classes, System.Generics.Collections,
   Data.DB, FireDAC.Stan.Intf, FireDAC.Stan.Def, FireDAC.Stan.Param,
-  FireDAC.Phys, FireDAC.Phys.Intf, FireDAC.Phys.SQLite, FireDAC.DApt,
+  FireDAC.Phys, FireDAC.Phys.SQLite, FireDAC.DApt,
   FireDAC.Comp.Client,
   LocalVector.VectorStore;
 
@@ -58,11 +58,26 @@ implementation
 
 {$IFNDEF FPC}
 
+{ Bind a TBytes blob to a FireDAC param. (TFDParam.AsBytes is an indexed Byte
+  property, so a whole array can't be assigned to it; use a stream.) }
+procedure BindBlobParam(AParam: TFDParam; const ABytes: TBytes);
+var
+  MS: TBytesStream;
+begin
+  MS := TBytesStream.Create(ABytes);
+  try
+    AParam.LoadFromStream(MS, ftBlob);
+  finally
+    MS.Free;
+  end;
+end;
+
 procedure TFireDACVectorStore.OpenStore(const ADbPath, AVecExtPath: string);
 begin
-  // Use an external, extension-enabled sqlite3.dll (must be on the exe path).
+  // External, extension-enabled sqlite3.dll on the exe path. Setting VendorLib
+  // makes FireDAC use this DLL instead of its bundled SQLite (whose
+  // load_extension is disabled).
   FLink := TFDPhysSQLiteDriverLink.Create(nil);
-  FLink.Linkage := slDynamic;
   FLink.VendorLib := 'sqlite3.dll';
 
   FConn := TFDConnection.Create(nil);
@@ -196,7 +211,7 @@ begin
 
     Q.SQL.Text := 'INSERT INTO chunks_vec(rowid, embedding) VALUES(:r,:e)';
     Q.ParamByName('r').AsLargeInt := Result;
-    Q.ParamByName('e').AsBytes := VectorToBytes(AEmbedding);
+    BindBlobParam(Q.ParamByName('e'), VectorToBytes(AEmbedding));
     Q.ExecSQL;
   finally
     Q.Free;
@@ -214,7 +229,7 @@ begin
     Q.Connection := FConn;
     Q.SQL.Text := Format('SELECT rowid, distance FROM chunks_vec ' +
       'WHERE embedding MATCH :e ORDER BY distance LIMIT %d', [ALimit]);
-    Q.ParamByName('e').AsBytes := ABlob;
+    BindBlobParam(Q.ParamByName('e'), ABlob);
     Q.Open;
     while not Q.Eof do
     begin
