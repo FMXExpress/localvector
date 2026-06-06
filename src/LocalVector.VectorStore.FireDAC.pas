@@ -18,9 +18,10 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Generics.Collections,
-  Data.DB, FireDAC.Stan.Intf, FireDAC.Stan.Def, FireDAC.Stan.Param,
-  FireDAC.Phys, FireDAC.Phys.SQLite,
+  Data.DB, FireDAC.Stan.Intf, FireDAC.Stan.Def, FireDAC.Stan.Async,
+  FireDAC.Stan.Param, FireDAC.Phys, FireDAC.Phys.SQLite,
   FireDAC.Phys.SQLiteWrapper.Stat,   // statically link SQLite (no external DLL/bitness)
+  FireDAC.ConsoleUI.Wait,            // console wait handler (avoids UI factory error)
   FireDAC.DApt, FireDAC.Comp.Client,
   LocalVector.VectorStore;
 
@@ -84,8 +85,9 @@ begin
   FConn.Params.Add('Extensions=True');   // enables sqlite3 load_extension
   FConn.Connected := True;
 
-  // SQLite appends the platform suffix (.dll/.so) itself, so strip it.
-  FConn.ExecSQL('SELECT load_extension(' + QuotedStr(ChangeFileExt(AVecExtPath, '')) +
+  // load_extension is a SELECT-style function, so use ExecSQLScalar (ExecSQL
+  // rejects result-set commands). SQLite appends the platform suffix itself.
+  FConn.ExecSQLScalar('SELECT load_extension(' + QuotedStr(ChangeFileExt(AVecExtPath, '')) +
     ', ' + QuotedStr('sqlite3_vec_init') + ')');
 end;
 
