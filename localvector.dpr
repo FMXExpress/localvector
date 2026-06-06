@@ -4,7 +4,11 @@ program localvector;
 {$APPTYPE CONSOLE}
 
 uses
+{$IFDEF FPC}
+  SysUtils,
+{$ELSE}
   System.SysUtils,
+{$ENDIF}
   onnxruntime_pas_api in 'onnxruntime_pas_api.pas',
   onnxruntime in 'onnxruntime.pas',
   LocalVector.Runtime in 'src/LocalVector.Runtime.pas',

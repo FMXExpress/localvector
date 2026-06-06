@@ -51,8 +51,17 @@ build_fpc.bat        # Windows
 ./build_fpc.sh       # Linux/macOS
 ```
 
-FPC HTTPS downloads go through OpenSSL, so `libssl`/`libcrypto` must be
-available at runtime.
+`localvector`'s own units are written to compile under both Delphi and FPC
+(verified with FPC 3.2.2: the program compiles and the tokenizer's unit tests
+pass). Two caveats for FPC:
+
+- The **bundled ONNX bindings** (`onnxruntime.pas`, `onnxruntime_pas_api.pas`)
+  use Delphi-style unit names (`System.SysUtils`, …). A stock FPC CLI doesn't
+  map those to its RTL, so a full FPC build needs those names reachable — e.g.
+  an FPC whose RTL is namespaced, the Lazarus environment, or thin alias units.
+  Building with Delphi avoids this entirely.
+- FPC HTTPS downloads go through OpenSSL, so `libssl`/`libcrypto` must be
+  available at runtime.
 
 ## Run
 
@@ -108,8 +117,14 @@ If `--diag` reports a `System32` path or an old version, the right DLL is not
 next to the exe.
 
 Where to get a current `onnxruntime.dll`:
-- NuGet `Microsoft.ML.OnnxRuntime` → `runtimes/win-x64/native/onnxruntime.dll`, or
-- ONNX Runtime GitHub releases (win-x64).
+- ONNX Runtime GitHub release **v1.26.0** → asset
+  [`onnxruntime-win-x64-1.26.0.zip`](https://github.com/microsoft/onnxruntime/releases/tag/v1.26.0)
+  → copy `lib\onnxruntime.dll` next to `localvector.exe`, or
+- NuGet `Microsoft.ML.OnnxRuntime` → `runtimes/win-x64/native/onnxruntime.dll`.
+
+> Verified: the `LocalVector.Runtime` diagnostic, linked against the real
+> ONNX Runtime **1.26.0** library, reports `version 1.26.0` and
+> `GetApi(ORT_API_VERSION=10) = True` — i.e. 1.26 supports the model's IR v10.
 
 > The bindings request `ORT_API_VERSION = 10` (define `ONNX_NEW_VERSION` for 13).
 > A *lower* request is intentionally compatible with the widest range of DLLs —

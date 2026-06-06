@@ -15,7 +15,11 @@ unit LocalVector.Runtime;
 interface
 
 uses
+{$IFDEF FPC}
+  SysUtils,
+{$ELSE}
   System.SysUtils,
+{$ENDIF}
   onnxruntime_pas_api;
 
 type

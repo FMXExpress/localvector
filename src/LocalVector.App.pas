@@ -13,7 +13,11 @@ function RunApp: Integer;
 implementation
 
 uses
+{$IFDEF FPC}
+  SysUtils, Classes,
+{$ELSE}
   System.SysUtils, System.Classes,
+{$ENDIF}
   LocalVector.Runtime, LocalVector.Tokenizer, LocalVector.Embedder,
   LocalVector.Downloader;
 

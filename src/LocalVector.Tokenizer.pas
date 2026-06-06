@@ -17,7 +17,11 @@ unit LocalVector.Tokenizer;
 interface
 
 uses
+{$IFDEF FPC}
+  SysUtils, Classes, Generics.Collections;
+{$ELSE}
   System.SysUtils, System.Classes, System.Generics.Collections;
+{$ENDIF}
 
 type
   ETokenizerError = class(Exception);

@@ -15,7 +15,11 @@ unit LocalVector.Embedder;
 interface
 
 uses
+{$IFDEF FPC}
+  SysUtils, Math,
+{$ELSE}
   System.SysUtils, System.Math,
+{$ENDIF}
   onnxruntime_pas_api, onnxruntime,
   LocalVector.Runtime;
 

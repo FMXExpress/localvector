@@ -13,7 +13,11 @@ unit LocalVector.Downloader;
 interface
 
 uses
+{$IFDEF FPC}
+  SysUtils, Classes;
+{$ELSE}
   System.SysUtils, System.Classes;
+{$ENDIF}
 
 const
   HF_BASE_URL = 'https://huggingface.co/onnx-models/all-MiniLM-L6-v2-onnx/resolve/main/';
