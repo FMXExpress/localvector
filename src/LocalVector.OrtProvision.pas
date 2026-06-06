@@ -147,13 +147,12 @@ procedure ExtractZipEntryToFile(const AZip, AEntry, ADest: string);
 var
   Zip: TZipFile;
   Bytes: TBytes;
-  Hdr: TZipHeader;
   FS: TFileStream;
 begin
   Zip := TZipFile.Create;
   try
     Zip.Open(AZip, zmRead);
-    Zip.Read(AEntry, Bytes, Hdr);
+    Zip.Read(AEntry, Bytes);
     FS := TFileStream.Create(ADest, fmCreate);
     try
       if Length(Bytes) > 0 then
