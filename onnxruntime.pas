@@ -70,7 +70,11 @@ unit onnxruntime;
 interface
 
 uses
-  System.SysUtils, System.TypInfo, onnxruntime_pas_api, System.Generics.Collections, System.Generics.Defaults{$ifndef fpc}, System.SyncObjs{$else}{,libc}{$endif};
+{$ifdef fpc}
+  SysUtils, TypInfo, onnxruntime_pas_api, Generics.Collections, Generics.Defaults;
+{$else}
+  System.SysUtils, System.TypInfo, onnxruntime_pas_api, System.Generics.Collections, System.Generics.Defaults, System.SyncObjs;
+{$endif}
 
 type ortstring = ansistring;
 
@@ -2497,10 +2501,17 @@ begin
 end;
 
 class function TORTSessionHelper.Create(const model_path: TFileName):TORTSession;
+{$ifdef MSWINDOWS}
 var _path:widestring;
 begin
-  _path:=model_path;
+  _path:=model_path;   // ORTCHAR_T is wchar_t on Windows
   ThrowOnError(GetApi().CreateSession(DefaultEnv.p_, PORTCHAR_T(_path), DefaultSessionOptions.p_, @result.p_));
+{$else}
+var _path:ansistring;
+begin
+  _path:=ansistring(model_path);  // ORTCHAR_T is char (UTF-8) on POSIX
+  ThrowOnError(GetApi().CreateSession(DefaultEnv.p_, PORTCHAR_T(PAnsiChar(_path)), DefaultSessionOptions.p_, @result.p_));
+{$endif}
   result.NewRef;
 end;
 

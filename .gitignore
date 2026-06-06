@@ -1,0 +1,24 @@
+# Downloaded models (fetched on first run)
+models/
+
+# Native runtime (ship alongside the exe, don't commit)
+onnxruntime.dll
+onnxruntime.so
+onnxruntime.dylib
+
+# Delphi / FPC build output
+*.exe
+*.dcu
+*.o
+*.ppu
+*.a
+*.res
+*.local
+*.identcache
+__history/
+__recovery/
+Win32/
+Win64/
+Linux64/
+OSX64/
+localvector

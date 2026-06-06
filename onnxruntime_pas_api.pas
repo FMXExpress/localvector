@@ -31,6 +31,7 @@ interface
     {$MACRO ON}
     {$PACKRECORDS C}
     {$PackEnum 4}
+    type size_t = NativeUInt; // FPC: pointer-sized unsigned, matches C size_t
   {$else}
     {$Z4}
     type size_t=UInt64; // delphi?
